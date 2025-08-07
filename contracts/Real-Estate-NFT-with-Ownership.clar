@@ -9,6 +9,11 @@
 (define-constant ERR-ALREADY-LISTED (err u105))
 (define-constant ERR-NOT-LISTED (err u106))
 
+(define-constant ERR-NOT-APPRAISER (err u107))
+(define-constant ERR-INVALID-APPRAISAL (err u108))
+
+(define-data-var appraiser-registry (list 50 principal) (list))
+
 (define-data-var last-token-id uint u0)
 
 (define-map property-data
@@ -203,3 +208,73 @@
       (get-ownership-history token-id u9))
   )
 ) 
+
+(define-map property-appraisals
+  { token-id: uint, appraisal-id: uint }
+  {
+    appraiser: principal,
+    appraised-value: uint,
+    appraisal-date: uint,
+    notes: (string-ascii 200)
+  }
+)
+
+(define-map appraisal-count
+  { token-id: uint }
+  { count: uint }
+)
+
+(define-read-only (is-registered-appraiser (appraiser principal))
+  (is-some (index-of (var-get appraiser-registry) appraiser))
+)
+
+(define-read-only (get-appraisal-count (token-id uint))
+  (default-to u0 (get count (map-get? appraisal-count { token-id: token-id })))
+)
+
+(define-read-only (get-property-appraisal (token-id uint) (appraisal-id uint))
+  (map-get? property-appraisals { token-id: token-id, appraisal-id: appraisal-id })
+)
+
+(define-read-only (get-latest-appraisal (token-id uint))
+  (let ((count (get-appraisal-count token-id)))
+    (if (> count u0)
+      (get-property-appraisal token-id (- count u1))
+      none
+    )
+  )
+)
+
+(define-public (register-appraiser (appraiser principal))
+  (let ((current-list (var-get appraiser-registry)))
+    (begin
+      (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-OWNER-ONLY)
+      (asserts! (not (is-registered-appraiser appraiser)) (err u109))
+      (asserts! (< (len current-list) u50) (err u110))
+      (var-set appraiser-registry (unwrap-panic (as-max-len? (append current-list appraiser) u50)))
+      (ok true)
+    )
+  )
+)
+
+(define-public (submit-appraisal (token-id uint) (appraised-value uint) (notes (string-ascii 200)))
+  (let ((current-count (get-appraisal-count token-id))
+        (property-exists (is-some (get-property-data token-id))))
+    (begin
+      (asserts! property-exists ERR-PROPERTY-NOT-FOUND)
+      (asserts! (is-registered-appraiser tx-sender) ERR-NOT-APPRAISER)
+      (asserts! (> appraised-value u0) ERR-INVALID-APPRAISAL)
+      (map-set property-appraisals
+        { token-id: token-id, appraisal-id: current-count }
+        {
+          appraiser: tx-sender,
+          appraised-value: appraised-value,
+          appraisal-date: stacks-block-height,
+          notes: notes
+        }
+      )
+      (map-set appraisal-count { token-id: token-id } { count: (+ current-count u1) })
+      (ok current-count)
+    )
+  )
+)
