@@ -12,6 +12,8 @@
 (define-constant ERR-NOT-APPRAISER (err u107))
 (define-constant ERR-INVALID-APPRAISAL (err u108))
 
+(define-constant ERR-INVALID-MAINTENANCE (err u111))
+
 (define-data-var appraiser-registry (list 50 principal) (list))
 
 (define-data-var last-token-id uint u0)
@@ -274,6 +276,80 @@
         }
       )
       (map-set appraisal-count { token-id: token-id } { count: (+ current-count u1) })
+      (ok current-count)
+    )
+  )
+)
+
+
+(define-map property-maintenance
+  { token-id: uint, maintenance-id: uint }
+  {
+    owner: principal,
+    maintenance-type: (string-ascii 50),
+    description: (string-ascii 200),
+    cost: uint,
+    contractor: (optional (string-ascii 100)),
+    date-completed: uint,
+    timestamp: uint
+  }
+)
+
+(define-map maintenance-count
+  { token-id: uint }
+  { count: uint }
+)
+
+(define-read-only (get-maintenance-count (token-id uint))
+  (default-to u0 (get count (map-get? maintenance-count { token-id: token-id })))
+)
+
+(define-read-only (get-property-maintenance (token-id uint) (maintenance-id uint))
+  (map-get? property-maintenance { token-id: token-id, maintenance-id: maintenance-id })
+)
+
+(define-read-only (get-latest-maintenance (token-id uint))
+  (let ((count (get-maintenance-count token-id)))
+    (if (> count u0)
+      (get-property-maintenance token-id (- count u1))
+      none
+    )
+  )
+)
+
+(define-read-only (get-total-maintenance-cost (token-id uint))
+  (let ((count (get-maintenance-count token-id)))
+    (fold + (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9) u0)
+  )
+)
+
+(define-public (record-maintenance 
+  (token-id uint)
+  (maintenance-type (string-ascii 50))
+  (description (string-ascii 200))
+  (cost uint)
+  (contractor (optional (string-ascii 100)))
+)
+  (let ((current-count (get-maintenance-count token-id))
+        (owner (nft-get-owner? real-estate-nft token-id)))
+    (begin
+      (asserts! (is-some owner) ERR-PROPERTY-NOT-FOUND)
+      (asserts! (is-eq (some tx-sender) owner) ERR-NOT-TOKEN-OWNER)
+      (asserts! (> (len maintenance-type) u0) ERR-INVALID-MAINTENANCE)
+      (asserts! (> (len description) u0) ERR-INVALID-MAINTENANCE)
+      (map-set property-maintenance
+        { token-id: token-id, maintenance-id: current-count }
+        {
+          owner: tx-sender,
+          maintenance-type: maintenance-type,
+          description: description,
+          cost: cost,
+          contractor: contractor,
+          date-completed: stacks-block-height,
+          timestamp: stacks-block-height
+        }
+      )
+      (map-set maintenance-count { token-id: token-id } { count: (+ current-count u1) })
       (ok current-count)
     )
   )
