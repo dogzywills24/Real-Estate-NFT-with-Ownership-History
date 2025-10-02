@@ -14,6 +14,12 @@
 
 (define-constant ERR-INVALID-MAINTENANCE (err u111))
 
+(define-constant ERR-NOT-LEASED (err u112))
+(define-constant ERR-ALREADY-LEASED (err u113))
+(define-constant ERR-INVALID-LEASE-TERMS (err u114))
+(define-constant ERR-LEASE-EXPIRED (err u115))
+(define-constant ERR-PAYMENT-AMOUNT-MISMATCH (err u116))
+
 (define-data-var appraiser-registry (list 50 principal) (list))
 
 (define-data-var last-token-id uint u0)
@@ -351,6 +357,124 @@
       )
       (map-set maintenance-count { token-id: token-id } { count: (+ current-count u1) })
       (ok current-count)
+    )
+  )
+)
+
+
+(define-map property-leases
+  { token-id: uint }
+  {
+    landlord: principal,
+    tenant: principal,
+    monthly-rent: uint,
+    deposit: uint,
+    start-block: uint,
+    end-block: uint,
+    active: bool
+  }
+)
+
+(define-map lease-payments
+  { token-id: uint, payment-id: uint }
+  {
+    tenant: principal,
+    amount: uint,
+    payment-block: uint,
+    period-start: uint,
+    period-end: uint
+  }
+)
+
+(define-map payment-count
+  { token-id: uint }
+  { count: uint }
+)
+
+(define-read-only (get-active-lease (token-id uint))
+  (map-get? property-leases { token-id: token-id })
+)
+
+(define-read-only (get-payment-count (token-id uint))
+  (default-to u0 (get count (map-get? payment-count { token-id: token-id })))
+)
+
+(define-read-only (get-lease-payment (token-id uint) (payment-id uint))
+  (map-get? lease-payments { token-id: token-id, payment-id: payment-id })
+)
+
+(define-public (create-lease (token-id uint) (tenant principal) (monthly-rent uint) (deposit uint) (duration-blocks uint))
+  (let ((owner (nft-get-owner? real-estate-nft token-id)))
+    (begin
+      (asserts! (is-eq (some tx-sender) owner) ERR-NOT-TOKEN-OWNER)
+      (asserts! (is-none (get-active-lease token-id)) ERR-ALREADY-LEASED)
+      (asserts! (> monthly-rent u0) ERR-INVALID-LEASE-TERMS)
+      (asserts! (> duration-blocks u0) ERR-INVALID-LEASE-TERMS)
+      (try! (stx-transfer? deposit tenant tx-sender))
+      (map-set property-leases
+        { token-id: token-id }
+        {
+          landlord: tx-sender,
+          tenant: tenant,
+          monthly-rent: monthly-rent,
+          deposit: deposit,
+          start-block: stacks-block-height,
+          end-block: (+ stacks-block-height duration-blocks),
+          active: true
+        }
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-public (pay-rent (token-id uint) (period-start uint) (period-end uint))
+  (let ((lease (get-active-lease token-id)))
+    (begin
+      (asserts! (is-some lease) ERR-NOT-LEASED)
+      (let ((lease-data (unwrap-panic lease))
+            (current-count (get-payment-count token-id)))
+        (begin
+          (asserts! (get active lease-data) ERR-NOT-LEASED)
+          (asserts! (<= stacks-block-height (get end-block lease-data)) ERR-LEASE-EXPIRED)
+          (asserts! (is-eq tx-sender (get tenant lease-data)) ERR-NOT-TOKEN-OWNER)
+          (try! (stx-transfer? (get monthly-rent lease-data) tx-sender (get landlord lease-data)))
+          (map-set lease-payments
+            { token-id: token-id, payment-id: current-count }
+            {
+              tenant: tx-sender,
+              amount: (get monthly-rent lease-data),
+              payment-block: stacks-block-height,
+              period-start: period-start,
+              period-end: period-end
+            }
+          )
+          (map-set payment-count { token-id: token-id } { count: (+ current-count u1) })
+          (ok true)
+        )
+      )
+    )
+  )
+)
+
+(define-public (end-lease (token-id uint) (refund-deposit bool))
+  (let ((lease (get-active-lease token-id)))
+    (begin
+      (asserts! (is-some lease) ERR-NOT-LEASED)
+      (let ((lease-data (unwrap-panic lease)))
+        (begin
+          (asserts! (is-eq tx-sender (get landlord lease-data)) ERR-NOT-TOKEN-OWNER)
+          (if refund-deposit
+            (try! (stx-transfer? (get deposit lease-data) tx-sender (get tenant lease-data)))
+            true
+          )
+          (map-set property-leases
+            { token-id: token-id }
+            (merge lease-data { active: false })
+          )
+          (ok true)
+        )
+      )
     )
   )
 )
