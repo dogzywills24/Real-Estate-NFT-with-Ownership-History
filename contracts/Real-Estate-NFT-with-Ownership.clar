@@ -20,6 +20,9 @@
 (define-constant ERR-LEASE-EXPIRED (err u115))
 (define-constant ERR-PAYMENT-AMOUNT-MISMATCH (err u116))
 
+(define-constant ERR-OFFER-NOT-FOUND (err u117))
+(define-constant ERR-INVALID-OFFER (err u118))
+
 (define-data-var appraiser-registry (list 50 principal) (list))
 
 (define-data-var last-token-id uint u0)
@@ -471,6 +474,97 @@
           (map-set property-leases
             { token-id: token-id }
             (merge lease-data { active: false })
+          )
+          (ok true)
+        )
+      )
+    )
+  )
+)
+
+(define-map property-offers
+  { token-id: uint, offer-id: uint }
+  {
+    buyer: principal,
+    offered-price: uint,
+    offer-block: uint,
+    expires-at: uint,
+    active: bool
+  }
+)
+
+(define-map offer-count
+  { token-id: uint }
+  { count: uint }
+)
+
+(define-read-only (get-offer-count (token-id uint))
+  (default-to u0 (get count (map-get? offer-count { token-id: token-id })))
+)
+
+(define-read-only (get-property-offer (token-id uint) (offer-id uint))
+  (map-get? property-offers { token-id: token-id, offer-id: offer-id })
+)
+
+(define-public (make-offer (token-id uint) (offered-price uint) (duration-blocks uint))
+  (let ((owner (nft-get-owner? real-estate-nft token-id))
+        (current-count (get-offer-count token-id)))
+    (begin
+      (asserts! (is-some owner) ERR-PROPERTY-NOT-FOUND)
+      (asserts! (not (is-eq (some tx-sender) owner)) ERR-NOT-TOKEN-OWNER)
+      (asserts! (> offered-price u0) ERR-INVALID-OFFER)
+      (asserts! (> duration-blocks u0) ERR-INVALID-OFFER)
+      (map-set property-offers
+        { token-id: token-id, offer-id: current-count }
+        {
+          buyer: tx-sender,
+          offered-price: offered-price,
+          offer-block: stacks-block-height,
+          expires-at: (+ stacks-block-height duration-blocks),
+          active: true
+        }
+      )
+      (map-set offer-count { token-id: token-id } { count: (+ current-count u1) })
+      (ok current-count)
+    )
+  )
+)
+
+(define-public (accept-offer (token-id uint) (offer-id uint))
+  (let ((offer (get-property-offer token-id offer-id))
+        (owner (nft-get-owner? real-estate-nft token-id)))
+    (begin
+      (asserts! (is-some offer) ERR-OFFER-NOT-FOUND)
+      (asserts! (is-eq (some tx-sender) owner) ERR-NOT-TOKEN-OWNER)
+      (let ((offer-data (unwrap-panic offer)))
+        (begin
+          (asserts! (get active offer-data) ERR-OFFER-NOT-FOUND)
+          (asserts! (<= stacks-block-height (get expires-at offer-data)) ERR-OFFER-NOT-FOUND)
+          (try! (stx-transfer? (get offered-price offer-data) (get buyer offer-data) tx-sender))
+          (try! (nft-transfer? real-estate-nft token-id tx-sender (get buyer offer-data)))
+          (unwrap-panic (record-transfer token-id (some tx-sender) (get buyer offer-data) (get offered-price offer-data)))
+          (map-set property-offers
+            { token-id: token-id, offer-id: offer-id }
+            (merge offer-data { active: false })
+          )
+          (ok true)
+        )
+      )
+    )
+  )
+)
+
+(define-public (cancel-offer (token-id uint) (offer-id uint))
+  (let ((offer (get-property-offer token-id offer-id)))
+    (begin
+      (asserts! (is-some offer) ERR-OFFER-NOT-FOUND)
+      (let ((offer-data (unwrap-panic offer)))
+        (begin
+          (asserts! (is-eq tx-sender (get buyer offer-data)) ERR-NOT-TOKEN-OWNER)
+          (asserts! (get active offer-data) ERR-OFFER-NOT-FOUND)
+          (map-set property-offers
+            { token-id: token-id, offer-id: offer-id }
+            (merge offer-data { active: false })
           )
           (ok true)
         )
